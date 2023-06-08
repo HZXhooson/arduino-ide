@@ -179,7 +179,8 @@ export class CreateApi {
         );
       })
       .catch((reason) => {
-        if (reason?.status === 404) return [] as Create.Resource[];
+        if (reason?.status === 404)
+          return [] as Create.Resource[]; // TODO: must not swallow 404
         else throw reason;
       });
   }

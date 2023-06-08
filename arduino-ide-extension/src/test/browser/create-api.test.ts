@@ -5,17 +5,23 @@ import {
 } from '@theia/core/shared/inversify';
 import { assert, expect } from 'chai';
 import fetch from 'cross-fetch';
+import { rejects } from 'node:assert';
 import { posix } from 'node:path';
+import queryString from 'query-string';
 import { v4 } from 'uuid';
 import { ArduinoPreferences } from '../../browser/arduino-preferences';
 import { AuthenticationClientService } from '../../browser/auth/authentication-client-service';
 import { CreateApi } from '../../browser/create/create-api';
 import { splitSketchPath } from '../../browser/create/create-paths';
-import { Create, CreateError } from '../../browser/create/typings';
+import {
+  Create,
+  CreateError,
+  isNotFound,
+  isUnprocessableContent,
+} from '../../browser/create/typings';
 import { SketchCache } from '../../browser/widgets/cloud-sketchbook/cloud-sketch-cache';
 import { SketchesService } from '../../common/protocol';
 import { AuthenticationSession } from '../../node/auth/types';
-import queryString from 'query-string';
 
 /* eslint-disable @typescript-eslint/no-non-null-asserted-optional-chain */
 /* eslint-disable @typescript-eslint/no-non-null-assertion */
@@ -227,6 +233,48 @@ describe('create-api', () => {
     expect(sketches.length).to.be.equal(2);
     expect(findByName(name, sketches)).to.be.not.undefined;
     expect(findByName(otherName, sketches)).to.be.not.undefined;
+  });
+
+  it('should fail with HTTP 422 when reading a file but is a directory', async () => {
+    const name = v4();
+    const content = 'void setup(){} void loop(){}';
+    const posixPath = toPosix(name);
+
+    await createApi.createSketch(posixPath, content);
+    const resources = await createApi.readDirectory(posixPath);
+    expect(resources).to.be.not.empty;
+
+    await rejects(createApi.readFile(posixPath), (thrown) =>
+      isUnprocessableContent(thrown)
+    );
+  });
+
+  it('should fail with HTTP 422 when listing a directory but is a file', async () => {
+    const name = v4();
+    const content = 'void setup(){} void loop(){}';
+    const posixPath = toPosix(name);
+
+    await createApi.createSketch(posixPath, content);
+    const mainSketchFilePath = posixPath + posixPath + '.ino';
+    const sketchContent = await createApi.readFile(mainSketchFilePath);
+    expect(sketchContent).to.be.equal(content);
+
+    await rejects(createApi.readDirectory(mainSketchFilePath), (thrown) =>
+      isUnprocessableContent(thrown)
+    );
+  });
+
+  it("should fail with HTTP 404 when deleting a non-existing directory via the '/files/d' endpoint", async () => {
+    const name = v4();
+    const posixPath = toPosix(name);
+
+    const sketches = await createApi.sketches();
+    const sketch = findByName(name, sketches);
+    expect(sketch).to.be.undefined;
+
+    await rejects(createApi.deleteDirectory(posixPath), (thrown) =>
+      isNotFound(thrown)
+    );
   });
 
   ['.', '-', '_'].map((char) => {
