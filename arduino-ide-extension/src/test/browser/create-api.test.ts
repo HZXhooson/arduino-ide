@@ -7,6 +7,7 @@ import { assert, expect } from 'chai';
 import fetch from 'cross-fetch';
 import { rejects } from 'node:assert';
 import { posix } from 'node:path';
+import PQueue from 'p-queue';
 import queryString from 'query-string';
 import { v4 } from 'uuid';
 import { ArduinoPreferences } from '../../browser/arduino-preferences';
@@ -46,6 +47,11 @@ describe('create-api', () => {
   });
 
   beforeEach(async function () {
+    this.timeout(timeout);
+    await cleanAllSketches();
+  });
+
+  afterEach(async function () {
     this.timeout(timeout);
     await cleanAllSketches();
   });
@@ -126,13 +132,14 @@ describe('create-api', () => {
 
   async function cleanAllSketches(): Promise<void> {
     let sketches = await createApi.sketches();
-    // Cannot delete the sketches with `await Promise.all` as all delete promise successfully resolve, but the sketch is not deleted from the server.
-    await sketches
-      .map(({ path }) => createApi.deleteSketch(path))
-      .reduce(async (acc, curr) => {
-        await acc;
-        return curr;
-      }, Promise.resolve());
+    const deleteExecutionQueue = new PQueue({
+      concurrency: 5,
+      autoStart: true,
+    });
+    sketches.forEach(({ path }) =>
+      deleteExecutionQueue.add(() => createApi.deleteSketch(path))
+    );
+    await deleteExecutionQueue.onIdle();
     sketches = await createApi.sketches();
     expect(sketches).to.be.empty;
   }
@@ -348,19 +355,23 @@ describe('create-api', () => {
       diff < 0 ? '<' : diff > 0 ? '>' : '='
     } limit)`, async () => {
       const content = 'void setup(){} void loop(){}';
-      const maxLimit = 50; // https://github.com/arduino/arduino-ide/pull/875
+      const maxLimit = 10;
       const sketchCount = maxLimit + diff;
       const sketchNames = [...Array(sketchCount).keys()].map(() => v4());
 
-      await sketchNames
-        .map((name) => createApi.createSketch(toPosix(name), content))
-        .reduce(async (acc, curr) => {
-          await acc;
-          return curr;
-        }, Promise.resolve() as Promise<unknown>);
+      const createExecutionQueue = new PQueue({
+        concurrency: 5,
+        autoStart: true,
+      });
+      sketchNames.forEach((name) =>
+        createExecutionQueue.add(() =>
+          createApi.createSketch(toPosix(name), content)
+        )
+      );
+      await createExecutionQueue.onIdle();
 
       createApi.resetRequestRecording();
-      const sketches = await createApi.sketches();
+      const sketches = await createApi.sketches(maxLimit);
       const allRequests = createApi.requestRecording.slice();
 
       expect(sketches.length).to.be.equal(sketchCount);
